@@ -139,8 +139,8 @@ export class VideoProcessor {
       scaleFilter = `scale=${scaleWidth}:-1,`
     }
 
-    // Create overlay filter with opacity
-    return `${scaleFilter}format=rgba,colorchannelmixer=aa=${imageOpacity}[watermark];[0:v][watermark]overlay=${positionFilter}`
+    // Create overlay filter with opacity, starting with [1:v] input stream reference
+    return `[1:v]${scaleFilter}format=rgba,colorchannelmixer=aa=${imageOpacity}[watermark];[0:v][watermark]overlay=${positionFilter}`
   }
 
   async processVideo(
