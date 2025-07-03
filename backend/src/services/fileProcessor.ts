@@ -274,7 +274,7 @@ export class FileProcessor {
 
   getOutputUrl(outputPath: string): string {
     const filename = path.basename(outputPath)
-    return `/output/${filename}`
+    return `/output/file/${filename}`
   }
 
   getFileType(mimetype: string): 'image' | 'pdf' | 'unsupported' {

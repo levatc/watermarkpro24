@@ -272,7 +272,7 @@ export class VideoProcessor {
 
   getOutputUrl(outputPath: string): string {
     const filename = path.basename(outputPath)
-    return `/output/${filename}`
+    return `/output/video/${filename}`
   }
 }
 

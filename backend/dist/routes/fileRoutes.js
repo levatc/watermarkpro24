@@ -9,7 +9,7 @@ const path_1 = __importDefault(require("path"));
 const fs_1 = __importDefault(require("fs"));
 async function fileRoutes(fastify) {
     // Download processed files (images, PDFs)
-    fastify.get('/output/:filename', async (request, reply) => {
+    fastify.get('/output/file/:filename', async (request, reply) => {
         try {
             const { filename } = request.params;
             const outputPath = path_1.default.join(process.cwd(), 'output', filename);
