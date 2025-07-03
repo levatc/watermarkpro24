@@ -18,47 +18,8 @@ interface ProcessVideoRequest extends FastifyRequest {
 }
 
 export async function videoRoutes(fastify: FastifyInstance) {
-  // Download processed video
-  fastify.get('/output/:filename', async (request: FastifyRequest<{Params: {filename: string}}>, reply: FastifyReply) => {
-    try {
-      const { filename } = request.params
-      const outputPath = path.join(process.cwd(), 'output', filename)
-      
-      // Security check: ensure filename is safe
-      if (!filename.match(/^[a-zA-Z0-9_-]+\.(mp4|avi|mov|mkv|webm)$/)) {
-        return reply.code(400).send({
-          success: false,
-          error: { message: 'Ungültiger Dateiname' }
-        })
-      }
-      
-      // Check if file exists
-      if (!fs.existsSync(outputPath)) {
-        return reply.code(404).send({
-          success: false,
-          error: { message: 'Datei nicht gefunden' }
-        })
-      }
-      
-      const stats = fs.statSync(outputPath)
-      
-      // Set appropriate headers
-      reply.header('Content-Type', 'video/mp4')
-      reply.header('Content-Length', stats.size)
-      reply.header('Content-Disposition', `attachment; filename="${filename}"`)
-      
-      // Stream the file
-      const stream = fs.createReadStream(outputPath)
-      return reply.send(stream)
-      
-    } catch (error) {
-      console.error('Download error:', error)
-      return reply.code(500).send({
-        success: false,
-        error: { message: 'Fehler beim Herunterladen der Datei' }
-      })
-    }
-  })
+  // Note: File download route removed to prevent conflict with fileRoutes
+  // All file downloads (including videos) are now handled by fileRoutes
 
   // Process video with watermark
   fastify.post('/api/process-video', async (request: ProcessVideoRequest, reply: FastifyReply) => {

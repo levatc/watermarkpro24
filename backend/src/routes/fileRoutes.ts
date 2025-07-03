@@ -18,7 +18,7 @@ interface ProcessFileRequest extends FastifyRequest {
 }
 
 export async function fileRoutes(fastify: FastifyInstance) {
-  // Download processed files (images, PDFs)
+  // Download processed files (images, PDFs, videos)
   fastify.get('/output/:filename', async (request: FastifyRequest<{Params: {filename: string}}>, reply: FastifyReply) => {
     try {
       const { filename } = request.params

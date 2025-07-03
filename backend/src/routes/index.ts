@@ -3,10 +3,10 @@ import { videoRoutes } from './videoRoutes'
 import { fileRoutes } from './fileRoutes'
 
 export async function setupRoutes(server: FastifyInstance) {
-  // Register video processing routes
+  // Register video processing routes (processing only, downloads handled by fileRoutes)
   await server.register(videoRoutes)
   
-  // Register file processing routes (images, PDFs)
+  // Register file processing routes (images, PDFs, videos - handles all downloads)
   await server.register(fileRoutes)
 
   // API prefix
