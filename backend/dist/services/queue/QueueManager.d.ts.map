@@ -1,0 +1,1 @@
+{"version":3,"file":"QueueManager.d.ts","sourceRoot":"","sources":["../../../src/services/queue/QueueManager.ts"],"names":[],"mappings":"AAGA,qBAAa,YAAY;IACvB,OAAO,CAAC,cAAc,CAAa;IACnC,OAAO,CAAC,KAAK,CAAO;;IA2BpB,OAAO,CAAC,YAAY;IAoCpB,OAAO,CAAC,kBAAkB;IAcpB,MAAM,CAAC,IAAI,EAAE,MAAM,EAAE,IAAI,EAAE,GAAG,EAAE,OAAO,CAAC,EAAE,GAAG;IAI7C,WAAW;;;;;;IAcX,OAAO;CAId"}

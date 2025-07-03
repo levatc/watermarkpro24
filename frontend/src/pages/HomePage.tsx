@@ -1,7 +1,7 @@
 import React, { useState } from 'react'
 import { motion } from 'framer-motion'
 import WatermarkEditor from '../components/WatermarkEditor'
-import VideoDropZone from '../components/VideoDropZone'
+import FileDropZone from '../components/FileDropZone'
 
 interface WatermarkSettings {
   text: string
@@ -30,7 +30,7 @@ const HomePage: React.FC = () => {
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.5 }}
         >
-          Video Wasserzeichen Tool
+          Universelles Wasserzeichen Tool
         </motion.h1>
         <motion.p
           className="mt-2 text-lg text-gray-600"
@@ -38,20 +38,20 @@ const HomePage: React.FC = () => {
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.5, delay: 0.1 }}
         >
-          Definieren Sie Ihr Text-Wasserzeichen und fügen Sie es zu Ihren Videos hinzu
+          Definieren Sie Ihr Text-Wasserzeichen und fügen Sie es zu Videos, Bildern oder PDFs hinzu
         </motion.p>
       </div>
 
       {/* Watermark Editor */}
       <WatermarkEditor onSettingsChange={setWatermarkSettings} />
 
-      {/* Video Upload and Processing */}
+      {/* File Upload and Processing */}
       <motion.div
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.5, delay: 0.2 }}
       >
-        <VideoDropZone watermarkSettings={watermarkSettings} />
+        <FileDropZone watermarkSettings={watermarkSettings} />
       </motion.div>
     </div>
   )
