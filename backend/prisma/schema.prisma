@@ -1,0 +1,97 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = "file:./dev.db"
+}
+
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  name      String?
+  apiKey    String?  @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  files      File[]
+  watermarks Watermark[]
+  jobs       Job[]
+
+  @@map("users")
+}
+
+model File {
+  id           String    @id @default(cuid())
+  originalName String
+  filename     String    @unique
+  mimetype     String
+  size         Int
+  url          String
+  thumbnailUrl String?
+  metadata     String?
+  uploadedAt   DateTime  @default(now())
+  
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  jobFiles JobFile[]
+
+  @@map("files")
+}
+
+model Watermark {
+  id        String   @id @default(cuid())
+  name      String
+  type      String   // 'image' | 'text'
+  settings  String
+  fileUrl   String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  jobs Job[]
+
+  @@map("watermarks")
+}
+
+model Job {
+  id               String    @id @default(cuid())
+  status           String    @default("pending")
+  priority         String    @default("normal")
+  outputSettings   String
+  progress         Int       @default(0)
+  estimatedDuration Int?
+  startedAt        DateTime?
+  completedAt      DateTime?
+  error            String?
+  createdAt        DateTime  @default(now())
+
+  userId      String
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  watermarkId String
+  watermark   Watermark @relation(fields: [watermarkId], references: [id])
+  
+  files JobFile[]
+
+  @@map("jobs")
+}
+
+model JobFile {
+  id        String  @id @default(cuid())
+  status    String  @default("pending")
+  progress  Int     @default(0)
+  resultUrl String?
+  error     String?
+
+  jobId  String
+  job    Job    @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  fileId String
+  file   File   @relation(fields: [fileId], references: [id], onDelete: Cascade)
+
+  @@unique([jobId, fileId])
+  @@map("job_files")
+} 
