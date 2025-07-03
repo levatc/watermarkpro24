@@ -8,6 +8,7 @@ import staticFiles from '@fastify/static'
 import path from 'path'
 import { PrismaClient } from '@prisma/client'
 import { setupRoutes } from './routes'
+import { QueueManager } from './services/queue/QueueManager'
 
 const prisma = new PrismaClient()
 
@@ -17,10 +18,17 @@ const server = Fastify({
   requestTimeout: 60000, // 60 seconds
 })
 
+// Global queue manager instance
+let queueManager: QueueManager
+
+// WebSocket clients storage
+const wsClients = new Set<any>()
+
 // Declare plugins and decorators
 declare module 'fastify' {
   interface FastifyInstance {
     prisma: PrismaClient
+    queueManager: QueueManager
   }
 }
 
@@ -33,9 +41,8 @@ async function start() {
 
     // CORS
     await server.register(cors, {
-      origin: ['http://localhost:3000', 'http://localhost:3001', 'http://localhost:3002'],
+      origin: process.env.FRONTEND_URL || 'http://localhost:3000',
       credentials: true,
-      methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
     })
 
     // Rate limiting
@@ -68,30 +75,156 @@ async function start() {
     // Decorators for dependency injection
     server.decorate('prisma', prisma)
 
+    // Initialize queue manager
+    queueManager = new QueueManager()
+
+    // Setup WebSocket event handlers
+    queueManager.on('job:update', (jobProgress) => {
+      // Broadcast to all connected WebSocket clients
+      wsClients.forEach(client => {
+        if (client.readyState === 1) { // WebSocket.OPEN
+          client.send(JSON.stringify({
+            type: 'job:update',
+            data: jobProgress
+          }))
+        }
+      })
+    })
+
+    queueManager.on('job:added', (jobInfo) => {
+      wsClients.forEach(client => {
+        if (client.readyState === 1) {
+          client.send(JSON.stringify({
+            type: 'job:added',
+            data: jobInfo
+          }))
+        }
+      })
+    })
+
+    queueManager.on('job:completed', (jobInfo) => {
+      wsClients.forEach(client => {
+        if (client.readyState === 1) {
+          client.send(JSON.stringify({
+            type: 'job:completed',
+            data: jobInfo
+          }))
+        }
+      })
+    })
+
+    queueManager.on('job:failed', (jobInfo) => {
+      wsClients.forEach(client => {
+        if (client.readyState === 1) {
+          client.send(JSON.stringify({
+            type: 'job:failed',
+            data: jobInfo
+          }))
+        }
+      })
+    })
+
+    // Decorate server with queue manager
+    server.decorate('queueManager', queueManager)
+
+    // WebSocket route for real-time updates
+    await server.register(async function (fastify) {
+      fastify.get('/ws', { websocket: true }, (connection, req) => {
+        console.log('New WebSocket connection established')
+        wsClients.add(connection.socket)
+
+        connection.socket.on('message', (message: any) => {
+          try {
+            const data = JSON.parse(message.toString())
+            
+            if (data.type === 'ping') {
+              connection.socket.send(JSON.stringify({ type: 'pong' }))
+            } else if (data.type === 'get_queue_status') {
+              // Send current queue status
+              queueManager.getJobStats().then(stats => {
+                connection.socket.send(JSON.stringify({
+                  type: 'queue_status',
+                  data: {
+                    stats,
+                    activeJobs: queueManager.getActiveJobs()
+                  }
+                }))
+              })
+            }
+          } catch (error) {
+            console.error('WebSocket message error:', error)
+          }
+        })
+
+        connection.socket.on('close', () => {
+          console.log('WebSocket connection closed')
+          wsClients.delete(connection.socket)
+        })
+
+        connection.socket.on('error', (error: any) => {
+          console.error('WebSocket error:', error)
+          wsClients.delete(connection.socket)
+        })
+
+        // Send initial queue status
+        queueManager.getJobStats().then(stats => {
+          connection.socket.send(JSON.stringify({
+            type: 'queue_status',
+            data: {
+              stats,
+              activeJobs: queueManager.getActiveJobs()
+            }
+          }))
+        })
+      })
+    })
+
+    // API routes for queue management
+    server.get('/api/queue/status', async (request, reply) => {
+      try {
+        const stats = await queueManager.getJobStats()
+        const activeJobs = queueManager.getActiveJobs()
+        
+        return reply.send({
+          success: true,
+          data: {
+            stats,
+            activeJobs
+          }
+        })
+      } catch (error) {
+        return reply.code(500).send({
+          success: false,
+          error: { message: 'Failed to get queue status' }
+        })
+      }
+    })
+
+    server.get('/api/queue/jobs/:uploadId', async (request: any, reply) => {
+      try {
+        const { uploadId } = request.params
+        const jobs = queueManager.getJobsByUploadId(uploadId)
+        
+        return reply.send({
+          success: true,
+          data: jobs
+        })
+      } catch (error) {
+        return reply.code(500).send({
+          success: false,
+          error: { message: 'Failed to get jobs for upload' }
+        })
+      }
+    })
+
     // Health check
     server.get('/health', async () => {
-      try {
-        await prisma.$queryRaw`SELECT 1`
-        return {
-          status: 'ok',
-          timestamp: new Date().toISOString(),
-          uptime: process.uptime(),
-          services: {
-            database: 'connected',
-            queue: 'mock',
-          }
-        }
-      } catch (error) {
-        server.log.error('Health check failed', error)
-        return {
-          status: 'ok', // Return ok for now even if DB fails
-          timestamp: new Date().toISOString(),
-          uptime: process.uptime(),
-          services: {
-            database: 'mock',
-            queue: 'mock',
-          }
-        }
+      const queueStats = await queueManager.getJobStats()
+      return { 
+        status: 'ok', 
+        timestamp: new Date().toISOString(),
+        queue: queueStats,
+        websocketClients: wsClients.size
       }
     })
 
@@ -146,6 +279,7 @@ const gracefulShutdown = async (signal: string) => {
   try {
     await server.close()
     await prisma.$disconnect()
+    await queueManager.cleanup()
     console.log('✅ Server closed successfully')
     process.exit(0)
   } catch (error) {
