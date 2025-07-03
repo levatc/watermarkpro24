@@ -4,9 +4,16 @@ import path from 'path'
 import fs from 'fs'
 
 interface WatermarkSettings {
-  text: string
-  fontSize: number
-  color: string
+  type: 'text' | 'image'
+  // Text watermark properties
+  text?: string
+  fontSize?: number
+  color?: string
+  // Image watermark properties
+  imagePath?: string
+  imageOpacity?: number
+  imageScale?: number
+  // Common properties
   position: 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right' | 'center'
   opacity: number
 }
@@ -18,6 +25,64 @@ interface ProcessVideoRequest extends FastifyRequest {
 }
 
 export async function videoRoutes(fastify: FastifyInstance) {
+  // Upload watermark image
+  fastify.post('/api/upload-watermark', async (request: FastifyRequest, reply: FastifyReply) => {
+    try {
+      console.log('Watermark image upload request received')
+      
+      const data = await request.file()
+      if (!data) {
+        return reply.code(400).send({
+          success: false,
+          error: { message: 'Keine Bild-Datei hochgeladen' }
+        })
+      }
+
+      // Validate file type (images only)
+      const validImageTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp']
+      if (!validImageTypes.includes(data.mimetype)) {
+        return reply.code(400).send({
+          success: false,
+          error: { message: 'Ungültiges Bild-Format. Unterstützt: JPEG, PNG, GIF, WebP' }
+        })
+      }
+
+      // Get file buffer
+      const fileBuffer = await data.toBuffer()
+      
+      // Check file size (max 5MB for images)
+      const maxSize = 5 * 1024 * 1024 // 5MB
+      if (fileBuffer.length > maxSize) {
+        return reply.code(400).send({
+          success: false,
+          error: { message: 'Bild-Datei ist zu groß (max. 5MB)' }
+        })
+      }
+
+      // Save watermark image
+      const imagePath = await videoProcessor.saveWatermarkImage(fileBuffer, data.filename)
+
+      return reply.send({
+        success: true,
+        data: {
+          imagePath: imagePath,
+          filename: data.filename,
+          size: fileBuffer.length
+        }
+      })
+
+    } catch (error) {
+      console.error('Watermark image upload error:', error)
+      return reply.code(500).send({
+        success: false,
+        error: { 
+          message: 'Fehler beim Hochladen des Wasserzeichen-Bildes',
+          details: error instanceof Error ? error.message : 'Unknown error'
+        }
+      })
+    }
+  })
+
   // Download processed video
   fastify.get('/output/:filename', async (request: FastifyRequest<{Params: {filename: string}}>, reply: FastifyReply) => {
     try {
@@ -61,7 +126,7 @@ export async function videoRoutes(fastify: FastifyInstance) {
   })
 
   // Process video with watermark
-  fastify.post('/api/process-video', async (request: ProcessVideoRequest, reply: FastifyReply) => {
+  fastify.post('/api/process-video', async (request: FastifyRequest, reply: FastifyReply) => {
     try {
       console.log('Video processing request received')
       
@@ -86,7 +151,7 @@ export async function videoRoutes(fastify: FastifyInstance) {
                 console.log('✅ Video file received:', part.filename, part.mimetype)
               } else if (part.type === 'field' && part.fieldname === 'watermark') {
                 try {
-                  const watermarkData = part.value
+                  const watermarkData = part.value as string
                   console.log('📝 Raw watermark data length:', watermarkData?.length || 0)
                   watermarkSettings = JSON.parse(watermarkData.toString())
                   console.log('✅ Watermark settings parsed:', watermarkSettings)
@@ -129,7 +194,7 @@ export async function videoRoutes(fastify: FastifyInstance) {
       
       console.log('🔍 Final state:')
       console.log('- Video file:', videoFile ? `✅ ${videoFile.filename}` : '❌ Missing')
-      console.log('- Watermark:', watermarkSettings ? `✅ ${watermarkSettings.text}` : '❌ Missing')
+      console.log('- Watermark:', watermarkSettings ? `✅ Type: ${(watermarkSettings as WatermarkSettings).type}` : '❌ Missing')
       
       // Validate video file
       if (!videoFile) {
@@ -155,8 +220,9 @@ export async function videoRoutes(fastify: FastifyInstance) {
         console.log('🔧 This indicates a multipart parsing issue')
         console.log('📊 Parts received:', partCount)
         
-        // Use default watermark settings as fallback
+        // Use default text watermark settings as fallback
         watermarkSettings = {
+          type: 'text',
           text: '© 2024 WatermarkPro',
           fontSize: 24,
           color: '#ffffff',
@@ -166,12 +232,21 @@ export async function videoRoutes(fastify: FastifyInstance) {
         console.log('✅ Using default watermark settings:', watermarkSettings)
       }
 
-      // Validate watermark text
-      if (!watermarkSettings.text || watermarkSettings.text.trim() === '') {
-        return reply.code(400).send({
-          success: false,
-          error: { message: 'Wasserzeichen-Text darf nicht leer sein' }
-        })
+      // Validate watermark settings based on type
+      if (watermarkSettings.type === 'text') {
+        if (!watermarkSettings.text || watermarkSettings.text.trim() === '') {
+          return reply.code(400).send({
+            success: false,
+            error: { message: 'Wasserzeichen-Text darf nicht leer sein' }
+          })
+        }
+      } else if (watermarkSettings.type === 'image') {
+        if (!watermarkSettings.imagePath) {
+          return reply.code(400).send({
+            success: false,
+            error: { message: 'Kein Wasserzeichen-Bild ausgewählt' }
+          })
+        }
       }
 
       // Get file buffer - different method for parts() vs file()

@@ -8,9 +8,16 @@ import { nanoid } from 'nanoid'
 ffmpeg.setFfmpegPath(ffmpegInstaller.path)
 
 interface WatermarkSettings {
-  text: string
-  fontSize: number
-  color: string
+  type: 'text' | 'image'
+  // Text watermark properties
+  text?: string
+  fontSize?: number
+  color?: string
+  // Image watermark properties
+  imagePath?: string
+  imageOpacity?: number
+  imageScale?: number
+  // Common properties
   position: 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right' | 'center'
   opacity: number
 }
@@ -25,10 +32,12 @@ interface ProcessVideoResult {
 export class VideoProcessor {
   private readonly uploadsDir: string
   private readonly outputDir: string
+  private readonly watermarkDir: string
 
   constructor() {
     this.uploadsDir = path.join(process.cwd(), 'uploads')
     this.outputDir = path.join(process.cwd(), 'output')
+    this.watermarkDir = path.join(process.cwd(), 'watermarks')
     
     // Ensure directories exist
     this.ensureDirectories()
@@ -37,6 +46,7 @@ export class VideoProcessor {
   private async ensureDirectories(): Promise<void> {
     await fs.ensureDir(this.uploadsDir)
     await fs.ensureDir(this.outputDir)
+    await fs.ensureDir(this.watermarkDir)
   }
 
   private getPositionFilter(position: string, videoWidth: number, videoHeight: number, fontSize: number): string {
@@ -58,12 +68,31 @@ export class VideoProcessor {
     }
   }
 
+  private getImagePositionFilter(position: string): string {
+    const padding = 20
+    
+    switch (position) {
+      case 'top-left':
+        return `x=${padding}:y=${padding}`
+      case 'top-right':
+        return `x=main_w-overlay_w-${padding}:y=${padding}`
+      case 'bottom-left':
+        return `x=${padding}:y=main_h-overlay_h-${padding}`
+      case 'bottom-right':
+        return `x=main_w-overlay_w-${padding}:y=main_h-overlay_h-${padding}`
+      case 'center':
+        return `x=(main_w-overlay_w)/2:y=(main_h-overlay_h)/2`
+      default:
+        return `x=main_w-overlay_w-${padding}:y=main_h-overlay_h-${padding}`
+    }
+  }
+
   private createTextFilter(settings: WatermarkSettings): string {
     const {
-      text,
-      fontSize,
-      color,
-      opacity,
+      text = '',
+      fontSize = 24,
+      color = '#ffffff',
+      opacity = 0.8,
       position
     } = settings
 
@@ -94,6 +123,26 @@ export class VideoProcessor {
     return `drawtext=text='${escapedText}':fontsize=${fontSize}:fontcolor=${fontColor}:${positionFilter}`
   }
 
+  private createImageFilter(settings: WatermarkSettings): string {
+    const {
+      imageOpacity = 0.8,
+      imageScale = 1.0,
+      position
+    } = settings
+
+    const positionFilter = this.getImagePositionFilter(position)
+    
+    // Scale the watermark image if needed
+    let scaleFilter = ''
+    if (imageScale !== 1.0) {
+      const scaleWidth = Math.round(200 * imageScale) // Base width of 200px
+      scaleFilter = `scale=${scaleWidth}:-1,`
+    }
+
+    // Create overlay filter with opacity
+    return `${scaleFilter}format=rgba,colorchannelmixer=aa=${imageOpacity}[watermark];[0:v][watermark]overlay=${positionFilter}`
+  }
+
   async processVideo(
     inputPath: string,
     settings: WatermarkSettings,
@@ -103,8 +152,10 @@ export class VideoProcessor {
     const outputFilename = `watermarked_${nanoid()}.mp4`
     const outputPath = path.join(this.outputDir, outputFilename)
 
-    // First try with watermark text
-    const result = await this.processVideoWithWatermark(inputPath, outputPath, settings, onProgress, startTime)
+    // Process based on watermark type
+    const result = settings.type === 'image' && settings.imagePath
+      ? await this.processVideoWithImageWatermark(inputPath, outputPath, settings, onProgress, startTime)
+      : await this.processVideoWithTextWatermark(inputPath, outputPath, settings, onProgress, startTime)
     
     // If that fails, try simple copy without watermark
     if (!result.success) {
@@ -115,7 +166,7 @@ export class VideoProcessor {
     return result
   }
 
-  private async processVideoWithWatermark(
+  private async processVideoWithTextWatermark(
     inputPath: string,
     outputPath: string,
     settings: WatermarkSettings,
@@ -199,6 +250,99 @@ export class VideoProcessor {
     })
   }
 
+  private async processVideoWithImageWatermark(
+    inputPath: string,
+    outputPath: string,
+    settings: WatermarkSettings,
+    onProgress?: (progress: number) => void,
+    startTime: number = Date.now()
+  ): Promise<ProcessVideoResult> {
+    return new Promise((resolve) => {
+      try {
+        if (!settings.imagePath || !fs.existsSync(settings.imagePath)) {
+          resolve({
+            success: false,
+            error: 'Watermark image file not found'
+          })
+          return
+        }
+
+        const imageFilter = this.createImageFilter(settings)
+
+        const ffmpegProcess = ffmpeg(inputPath)
+          .input(settings.imagePath) // Add watermark image as second input
+          .complexFilter([imageFilter])
+          .outputOptions([
+            '-c:v libx264',        // Video codec
+            '-c:a aac',            // Audio codec
+            '-preset fast',         // Encoding speed
+            '-crf 23',             // Quality (lower = better quality)
+            '-movflags +faststart' // Web optimization
+          ])
+          .on('start', (commandLine) => {
+            console.log('🎬 FFmpeg started with image watermark:', commandLine)
+          })
+          .on('progress', (progress) => {
+            const percent = Math.round(progress.percent || 0)
+            console.log(`📊 Processing: ${percent}% (${progress.timemark || 'N/A'})`)
+            if (onProgress) {
+              onProgress(percent)
+            }
+          })
+          .on('stderr', (stderrLine) => {
+            console.log('FFmpeg stderr:', stderrLine)
+          })
+          .on('end', () => {
+            const processingTime = (Date.now() - startTime) / 1000
+            console.log(`✅ Image watermark processing completed in ${processingTime}s`)
+            
+            // Check if output file exists and has reasonable size
+            if (fs.existsSync(outputPath)) {
+              const stats = fs.statSync(outputPath)
+              console.log(`📁 Output file size: ${stats.size} bytes`)
+              if (stats.size < 1000) {
+                console.error('⚠️ Output file is suspiciously small!')
+                resolve({
+                  success: false,
+                  error: 'Output file too small - FFmpeg likely failed'
+                })
+                return
+              }
+            } else {
+              console.error('❌ Output file was not created!')
+              resolve({
+                success: false,
+                error: 'Output file not created'
+              })
+              return
+            }
+            
+            resolve({
+              success: true,
+              outputPath,
+              processingTime
+            })
+          })
+          .on('error', (err, stdout, stderr) => {
+            console.error('❌ FFmpeg image watermark error:', err.message)
+            console.error('📤 FFmpeg stdout:', stdout)
+            console.error('📥 FFmpeg stderr:', stderr)
+            resolve({
+              success: false,
+              error: `FFmpeg image watermark error: ${err.message}`
+            })
+          })
+          .save(outputPath)
+      } catch (error) {
+        console.error('Image watermark processing error:', error)
+        resolve({
+          success: false,
+          error: error instanceof Error ? error.message : 'Unknown error'
+        })
+      }
+    })
+  }
+
   private async processVideoSimple(
     inputPath: string,
     outputPath: string,
@@ -257,6 +401,14 @@ export class VideoProcessor {
   async saveUploadedFile(fileBuffer: Buffer, originalName: string): Promise<string> {
     const filename = `${nanoid()}_${originalName}`
     const filePath = path.join(this.uploadsDir, filename)
+    
+    await fs.writeFile(filePath, fileBuffer)
+    return filePath
+  }
+
+  async saveWatermarkImage(fileBuffer: Buffer, originalName: string): Promise<string> {
+    const filename = `watermark_${nanoid()}_${originalName}`
+    const filePath = path.join(this.watermarkDir, filename)
     
     await fs.writeFile(filePath, fileBuffer)
     return filePath
