@@ -1,9 +1,11 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
 import { fileProcessor } from '../services/fileProcessor'
+import { zipProcessor } from '../services/zipProcessor'
 import path from 'path'
 import fs from 'fs'
 
 interface WatermarkSettings {
+  type: 'text' | 'image'
   text: string
   fontSize: number
   color: string
@@ -190,6 +192,7 @@ export async function fileRoutes(fastify: FastifyInstance) {
         
         // Use default watermark settings as fallback
         watermarkSettings = {
+          type: 'text',
           text: '© 2024 WatermarkPro',
           fontSize: 24,
           color: '#ffffff',
@@ -290,13 +293,196 @@ export async function fileRoutes(fastify: FastifyInstance) {
     }
   })
 
+  // Process ZIP files with watermark
+  fastify.post('/api/process-zip', async (request: ProcessFileRequest, reply: FastifyReply) => {
+    try {
+      console.log('ZIP processing request received')
+      
+      let uploadedFile: any = null
+      let watermarkSettings: WatermarkSettings | null = null
+      let partCount = 0
+      
+      try {
+        // Process multipart data
+        const parts = request.parts()
+        const processingPromise = new Promise<void>(async (resolve, reject) => {
+          try {
+            for await (const part of parts) {
+              partCount++
+              console.log(`📦 Processing part ${partCount}:`, part.fieldname, part.type)
+              
+              if (part.type === 'file' && part.fieldname === 'zip') {
+                uploadedFile = part
+                console.log('✅ ZIP file received:', part.filename, part.mimetype)
+              } else if (part.type === 'field' && part.fieldname === 'watermark') {
+                try {
+                  const watermarkData = part.value
+                  console.log('📝 Raw watermark data length:', watermarkData?.length || 0)
+                  watermarkSettings = JSON.parse(watermarkData.toString())
+                  console.log('✅ Watermark settings parsed:', watermarkSettings)
+                } catch (error) {
+                  console.log('❌ Error parsing watermark data:', error)
+                }
+              } else {
+                console.log('❓ Unknown part:', part.fieldname, part.type)
+                if (part.type === 'field') {
+                  console.log('Field value:', part.value)
+                }
+              }
+              
+              // Early exit if we have both parts
+              if (uploadedFile && watermarkSettings) {
+                console.log('🎯 Both ZIP and watermark received, processing...')
+                break
+              }
+            }
+            resolve()
+          } catch (error) {
+            reject(error)
+          }
+        })
+        
+        // Race with timeout
+        await Promise.race([
+          processingPromise,
+          new Promise((_, reject) => 
+            setTimeout(() => reject(new Error('Multipart processing timeout')), 10000)
+          )
+        ])
+        
+        console.log(`✅ Multipart processing completed (${partCount} parts processed)`)
+        
+      } catch (error) {
+        console.log('⚠️ Multipart processing error or timeout:', error)
+        console.log(`📊 Processed ${partCount} parts before timeout/error`)
+      }
+      
+      console.log('🔍 Final state:')
+      console.log('- ZIP file:', uploadedFile ? `✅ ${uploadedFile.filename}` : '❌ Missing')
+      console.log('- Watermark:', watermarkSettings ? `✅ ${watermarkSettings.text}` : '❌ Missing')
+      
+      // Validate uploaded ZIP file
+      if (!uploadedFile) {
+        console.log('Error: No ZIP file uploaded')
+        return reply.code(400).send({
+          success: false,
+          error: { message: 'Keine ZIP-Datei hochgeladen' }
+        })
+      }
+
+      // Validate ZIP file type
+      if (!uploadedFile.mimetype.includes('zip') && !uploadedFile.mimetype.includes('application/x-zip-compressed')) {
+        return reply.code(400).send({
+          success: false,
+          error: { message: 'Ungültiges Dateiformat. Nur ZIP-Dateien werden unterstützt.' }
+        })
+      }
+
+      // Handle missing watermark settings with fallback
+      if (!watermarkSettings) {
+        console.log('❌ Missing watermark settings - using fallback')
+        console.log('🔧 This indicates a multipart parsing issue')
+        console.log('📊 Parts received:', partCount)
+        
+        // Use default watermark settings as fallback
+        watermarkSettings = {
+          type: 'text',
+          text: '© 2024 WatermarkPro',
+          fontSize: 24,
+          color: '#ffffff',
+          position: 'bottom-right',
+          opacity: 0.8
+        }
+        console.log('✅ Using default watermark settings:', watermarkSettings)
+      }
+
+      // Validate watermark text
+      if (!watermarkSettings.text || watermarkSettings.text.trim() === '') {
+        return reply.code(400).send({
+          success: false,
+          error: { message: 'Wasserzeichen-Text darf nicht leer sein' }
+        })
+      }
+
+      // Get file buffer
+      console.log('📁 Converting ZIP file to buffer...')
+      let fileBuffer: Buffer
+      
+      if (uploadedFile.file && typeof uploadedFile.file.toBuffer === 'function') {
+        fileBuffer = await uploadedFile.file.toBuffer()
+      } else if (typeof uploadedFile.toBuffer === 'function') {
+        fileBuffer = await uploadedFile.toBuffer()
+      } else {
+        const chunks: Buffer[] = []
+        for await (const chunk of uploadedFile.file) {
+          chunks.push(chunk)
+        }
+        fileBuffer = Buffer.concat(chunks)
+      }
+      
+      console.log('✅ ZIP buffer created, size:', fileBuffer.length)
+      
+      // Check file size (max 200MB for ZIP files)
+      const maxSize = 200 * 1024 * 1024 // 200MB
+      if (fileBuffer.length > maxSize) {
+        return reply.code(400).send({
+          success: false,
+          error: { message: 'ZIP-Datei ist zu groß (max. 200MB)' }
+        })
+      }
+
+      // Save uploaded ZIP file
+      const inputPath = await zipProcessor.saveUploadedZip(fileBuffer, uploadedFile.filename)
+
+      // Process ZIP file with progress tracking
+      const result = await zipProcessor.processZip(
+        inputPath,
+        watermarkSettings,
+        (status, currentFile, fileProgress) => {
+          console.log(`ZIP Processing: ${status}`, currentFile ? `- ${currentFile}` : '', fileProgress ? `(${fileProgress}%)` : '')
+        }
+      )
+
+      if (result.success) {
+        // Return success with processed files information
+        return reply.send({
+          success: true,
+          data: {
+            totalFiles: result.totalFiles,
+            processedFiles: result.processedFiles,
+            skippedFiles: result.skippedFiles,
+            processingTime: result.processingTime,
+            filename: uploadedFile.filename,
+            watermark: watermarkSettings
+          }
+        })
+      } else {
+        return reply.code(500).send({
+          success: false,
+          error: { message: result.error || 'ZIP-Verarbeitung fehlgeschlagen' }
+        })
+      }
+
+    } catch (error) {
+      console.error('ZIP processing error:', error)
+      
+      return reply.code(500).send({
+        success: false,
+        error: { 
+          message: 'Interner Server-Fehler bei der ZIP-Verarbeitung',
+          details: error instanceof Error ? error.message : 'Unknown error'
+        }
+      })
+    }
+  })
+
   // Health check for file processing
   fastify.get('/api/file/health', async (request: FastifyRequest, reply: FastifyReply) => {
     try {
       return reply.send({
         success: true,
         message: 'File processing service is healthy',
-        supportedTypes: ['image/jpeg', 'image/png', 'image/webp', 'application/pdf'],
+        supportedTypes: ['image/jpeg', 'image/png', 'image/webp', 'application/pdf', 'application/zip'],
         timestamp: new Date().toISOString()
       })
     } catch (error) {

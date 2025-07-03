@@ -43,9 +43,10 @@ npm run dev
 
 ### 📁 **Dateiformate & Upload**
 - **Drag & Drop Interface** für alle Dateitypen
-- **ZIP/RAR Archive** automatische Extraktion
-- **Batch-Verarbeitung** von 1000+ Dateien
-- **Stream-basierte Uploads** für große Dateien
+- **ZIP-Archive Upload** - Automatische Entpackung und Batch-Verarbeitung
+- **Unterstützte Formate**: JPG, PNG, WebP, MP4, AVI, MOV, PDF
+- **Batch-Verarbeitung** von 1000+ Dateien aus ZIP-Archiven
+- **Stream-basierte Uploads** für große Dateien (bis 200MB ZIP)
 
 ### 💧 **Wasserzeichen-Features**
 - **Text & Bild-Wasserzeichen** mit Live-Vorschau
