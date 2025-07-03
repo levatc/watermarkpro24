@@ -1,7 +1,9 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
 import { videoProcessor } from '../services/videoProcessor'
+import { queueManager } from './index'
 import path from 'path'
 import fs from 'fs'
+import { nanoid } from 'nanoid'
 
 interface WatermarkSettings {
   type: 'text' | 'image'
@@ -282,36 +284,32 @@ export async function videoRoutes(fastify: FastifyInstance) {
       // Save uploaded file
       const inputPath = await videoProcessor.saveUploadedFile(fileBuffer, videoFile.filename)
 
-      // Process video with progress tracking
-      const result = await videoProcessor.processVideo(
-        inputPath,
-        watermarkSettings,
-        (progress) => {
-          // Here you could emit WebSocket events for real-time progress
-          console.log(`Processing progress: ${progress}%`)
-        }
-      )
-
-      // Cleanup input file
-      await videoProcessor.cleanup(inputPath)
-
-      if (result.success && result.outputPath) {
-        // Return success with download URL
-        return reply.send({
-          success: true,
-          data: {
-            processedUrl: videoProcessor.getOutputUrl(result.outputPath),
-            processingTime: result.processingTime,
-            filename: videoFile.filename,
-            watermark: watermarkSettings
-          }
-        })
-      } else {
-        return reply.code(500).send({
-          success: false,
-          error: { message: result.error || 'Video-Verarbeitung fehlgeschlagen' }
-        })
+      // Add job to queue instead of processing directly
+      const jobData = {
+        id: nanoid(),
+        type: 'video' as const,
+        file: {
+          filename: videoFile.filename,
+          path: inputPath,
+          size: fileBuffer.length
+        },
+        watermark: null,
+        settings: watermarkSettings
       }
+
+      const job = await queueManager.addJob('video', jobData)
+
+      // Return job ID for tracking
+      return reply.send({
+        success: true,
+        data: {
+          jobId: job.id,
+          message: 'Video wurde zur Verarbeitung hinzugefügt',
+          filename: videoFile.filename,
+          queuePosition: await job.getPosition(),
+          estimatedWaitTime: await job.getPosition() * 30 // Estimate 30 seconds per job
+        }
+      })
 
     } catch (error) {
       console.error('Video processing error:', error)

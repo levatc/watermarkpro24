@@ -1,166 +1,157 @@
 import { FastifyInstance } from 'fastify'
 import { videoRoutes } from './videoRoutes'
 import { fileRoutes } from './fileRoutes'
+import { QueueManager } from '../services/queue/QueueManager'
 
-export async function setupRoutes(server: FastifyInstance) {
-  // Register video processing routes
-  await server.register(videoRoutes)
-  
-  // Register file processing routes (images, PDFs)
-  await server.register(fileRoutes)
+const queueManager = new QueueManager()
 
-  // API prefix
-  await server.register(async function (fastify) {
-    // Mock file upload endpoint
-    fastify.post('/api/files/upload', async (request, reply) => {
-      const parts = request.parts()
-      const files: any[] = []
+export async function setupRoutes(fastify: FastifyInstance) {
+  // Set QueueManager reference for WebSocket broadcasts
+  queueManager.setFastifyInstance(fastify)
+
+  // WebSocket route for real-time progress updates
+  fastify.register(async function (fastify) {
+    fastify.get('/ws', { websocket: true }, (connection, req) => {
+      console.log('🔌 WebSocket client connected')
       
-      for await (const part of parts) {
-        if (part.type === 'file') {
-          files.push({
-            id: `file_${Date.now()}_${Math.random().toString(36).substring(7)}`,
-            originalName: part.filename,
-            filename: `${Date.now()}_${part.filename}`,
-            mimetype: part.mimetype,
-            size: 0, // Would be calculated from actual file
-            url: `/uploads/${part.filename}`,
-            thumbnailUrl: part.mimetype?.startsWith('image/') ? `/thumbnails/${part.filename}` : null,
-            metadata: {
-              format: part.filename?.split('.').pop() || 'unknown',
-            },
-            uploadedAt: new Date().toISOString(),
-          })
-        }
-      }
-
-      return {
-        success: true,
-        data: {
-          uploadId: `upload_${Date.now()}`,
-          files,
-          totalSize: files.reduce((sum, file) => sum + file.size, 0),
-          estimatedProcessingTime: files.length * 2, // 2 seconds per file
-        },
-        message: `${files.length} file(s) uploaded successfully`
-      }
-    })
-
-    // Mock jobs endpoint
-    fastify.post('/api/jobs/watermark', async (request, reply) => {
-      const jobId = `job_${Date.now()}_${Math.random().toString(36).substring(7)}`
-      
-      return {
-        success: true,
-        data: {
-          jobId,
-          status: 'pending',
-          estimatedDuration: 30,
-          queuePosition: Math.floor(Math.random() * 5) + 1,
-          files: [],
-          createdAt: new Date().toISOString(),
-        }
-      }
-    })
-
-    // Mock watermarks endpoint
-    fastify.get('/api/watermarks', async (request, reply) => {
-      return {
-        success: true,
-        data: [
-          {
-            id: 'wm_1',
-            name: 'Standard Logo',
-            type: 'image',
-            settings: {
-              opacity: 0.8,
-              position: 'bottom-right',
-              scale: 0.2,
-              blendMode: 'normal',
-            },
-            previewUrl: '/watermarks/logo_preview.png',
-            createdAt: new Date().toISOString(),
-          },
-          {
-            id: 'wm_2',
-            name: 'Copyright Text',
-            type: 'text',
-            settings: {
-              opacity: 0.7,
-              position: 'bottom-center',
-              scale: 0.1,
-              blendMode: 'normal',
-              text: '© 2024 WatermarkPro',
-              fontFamily: 'Arial',
-              fontSize: 24,
-              color: '#ffffff',
-            },
-            createdAt: new Date().toISOString(),
-          },
-        ]
-      }
-    })
-
-    // Mock stats endpoint
-    fastify.get('/api/stats/overview', async (request, reply) => {
-      return {
-        success: true,
-        data: {
-          totalFiles: 1247,
-          totalJobs: 342,
-          totalProcessingTime: 15847,
-          averageProcessingTime: 46.3,
-          successRate: 98.7,
-          queueLength: 3,
-          activeWorkers: 5,
-        }
-      }
-    })
-
-    // WebSocket endpoint for real-time updates
-    fastify.register(async function (fastify) {
-      fastify.get('/ws', { websocket: true }, (connection, req) => {
-        connection.socket.on('message', (message) => {
-          // Handle incoming WebSocket messages
+      connection.socket.on('message', async (message) => {
+        try {
           const data = JSON.parse(message.toString())
           
-          if (data.type === 'subscribe') {
-            // Subscribe to job updates
-            connection.socket.send(JSON.stringify({
-              type: 'subscription_confirmed',
-              data: { jobId: data.jobId }
-            }))
-
-            // Simulate periodic updates
-            const interval = setInterval(() => {
-              const progress = Math.min(100, Math.floor(Math.random() * 100))
+          switch (data.type) {
+            case 'subscribe_job':
+              // Client wants to subscribe to a specific job
+              console.log(`📡 Client subscribed to job: ${data.jobId}`)
+              break
+              
+            case 'get_queue_stats':
+              // Send current queue statistics
+              const stats = await queueManager.getJobStats()
               connection.socket.send(JSON.stringify({
-                type: 'job_update',
-                data: {
-                  jobId: data.jobId,
-                  status: progress === 100 ? 'completed' : 'processing',
-                  progress,
-                  fileUpdates: []
-                }
+                type: 'queue_stats',
+                data: stats
               }))
-
-              if (progress === 100) {
-                clearInterval(interval)
-              }
-            }, 2000)
-
-            connection.socket.on('close', () => {
-              clearInterval(interval)
-            })
+              break
+              
+            case 'get_active_jobs':
+              // Send active jobs
+              const activeJobs = await queueManager.getActiveJobs()
+              connection.socket.send(JSON.stringify({
+                type: 'active_jobs',
+                data: activeJobs
+              }))
+              break
+              
+            default:
+              console.log('❓ Unknown WebSocket message type:', data.type)
           }
-        })
-
-        // Send welcome message
-        connection.socket.send(JSON.stringify({
-          type: 'connected',
-          data: { message: 'WebSocket connection established' }
-        }))
+        } catch (error) {
+          console.error('❌ WebSocket message error:', error)
+        }
       })
+      
+      connection.socket.on('close', () => {
+        console.log('🔌 WebSocket client disconnected')
+      })
+      
+      // Send initial connection confirmation
+      connection.socket.send(JSON.stringify({
+        type: 'connected',
+        message: 'WebSocket verbunden - Echtzeit-Updates aktiviert'
+      }))
     })
   })
-} 
+
+  // Queue management API routes
+  fastify.get('/api/queue/stats', async (request, reply) => {
+    try {
+      const stats = await queueManager.getJobStats()
+      return reply.send({
+        success: true,
+        data: stats
+      })
+    } catch (error) {
+      return reply.code(500).send({
+        success: false,
+        error: { message: 'Fehler beim Abrufen der Queue-Statistiken' }
+      })
+    }
+  })
+
+  fastify.get('/api/queue/jobs/active', async (request, reply) => {
+    try {
+      const activeJobs = await queueManager.getActiveJobs()
+      return reply.send({
+        success: true,
+        data: activeJobs
+      })
+    } catch (error) {
+      return reply.code(500).send({
+        success: false,
+        error: { message: 'Fehler beim Abrufen der aktiven Jobs' }
+      })
+    }
+  })
+
+  fastify.get('/api/queue/jobs/:jobId', async (request: any, reply) => {
+    try {
+      const { jobId } = request.params
+      const job = await queueManager.getJobById(jobId)
+      
+      if (!job) {
+        return reply.code(404).send({
+          success: false,
+          error: { message: 'Job nicht gefunden' }
+        })
+      }
+      
+      return reply.send({
+        success: true,
+        data: {
+          id: job.id,
+          data: job.data,
+          progress: job.progress(),
+          processedOn: job.processedOn,
+          finishedOn: job.finishedOn,
+          failedReason: job.failedReason,
+          timestamp: job.timestamp
+        }
+      })
+    } catch (error) {
+      return reply.code(500).send({
+        success: false,
+        error: { message: 'Fehler beim Abrufen des Jobs' }
+      })
+    }
+  })
+
+  fastify.delete('/api/queue/jobs/:jobId', async (request: any, reply) => {
+    try {
+      const { jobId } = request.params
+      const removed = await queueManager.removeJob(jobId)
+      
+      if (!removed) {
+        return reply.code(404).send({
+          success: false,
+          error: { message: 'Job nicht gefunden' }
+        })
+      }
+      
+      return reply.send({
+        success: true,
+        message: 'Job erfolgreich entfernt'
+      })
+    } catch (error) {
+      return reply.code(500).send({
+        success: false,
+        error: { message: 'Fehler beim Entfernen des Jobs' }
+      })
+    }
+  })
+
+  // Register existing routes
+  await fastify.register(videoRoutes)
+  await fastify.register(fileRoutes)
+}
+
+export { queueManager } 
