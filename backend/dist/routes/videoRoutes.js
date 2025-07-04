@@ -9,7 +9,7 @@ const path_1 = __importDefault(require("path"));
 const fs_1 = __importDefault(require("fs"));
 async function videoRoutes(fastify) {
     // Download processed video
-    fastify.get('/output/:filename', async (request, reply) => {
+    fastify.get('/output/video/:filename', async (request, reply) => {
         try {
             const { filename } = request.params;
             const outputPath = path_1.default.join(process.cwd(), 'output', filename);

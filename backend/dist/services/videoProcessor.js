@@ -218,7 +218,7 @@ class VideoProcessor {
     }
     getOutputUrl(outputPath) {
         const filename = path_1.default.basename(outputPath);
-        return `/output/${filename}`;
+        return `/output/video/${filename}`;
     }
 }
 exports.VideoProcessor = VideoProcessor;

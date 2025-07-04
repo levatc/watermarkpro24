@@ -19,7 +19,7 @@ interface ProcessVideoRequest extends FastifyRequest {
 
 export async function videoRoutes(fastify: FastifyInstance) {
   // Download processed video
-  fastify.get('/output/:filename', async (request: FastifyRequest<{Params: {filename: string}}>, reply: FastifyReply) => {
+  fastify.get('/output/video/:filename', async (request: FastifyRequest<{Params: {filename: string}}>, reply: FastifyReply) => {
     try {
       const { filename } = request.params
       const outputPath = path.join(process.cwd(), 'output', filename)

@@ -35,7 +35,6 @@ async function start() {
         await server.register(rate_limit_1.default, {
             max: 100,
             timeWindow: '1 minute',
-            skipSuccessfulRequests: false,
         });
         // File upload
         await server.register(multipart_1.default, {

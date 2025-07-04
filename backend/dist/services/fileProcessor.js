@@ -203,7 +203,7 @@ class FileProcessor {
     }
     getOutputUrl(outputPath) {
         const filename = path_1.default.basename(outputPath);
-        return `/output/${filename}`;
+        return `/output/file/${filename}`;
     }
     getFileType(mimetype) {
         if (mimetype.startsWith('image/')) {
