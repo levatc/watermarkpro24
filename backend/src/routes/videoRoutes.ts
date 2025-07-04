@@ -1,7 +1,9 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
 import { videoProcessor } from '../services/videoProcessor'
+import { QueueManager, JobData } from '../services/queue/QueueManager'
 import path from 'path'
 import fs from 'fs'
+import { v4 as uuidv4 } from 'uuid'
 
 interface WatermarkSettings {
   type: 'text' | 'image'
@@ -125,7 +127,7 @@ export async function videoRoutes(fastify: FastifyInstance) {
     }
   })
 
-  // Process video with watermark
+  // Process video with watermark - NEW QUEUE-BASED APPROACH
   fastify.post('/api/process-video', async (request: FastifyRequest, reply: FastifyReply) => {
     try {
       console.log('Video processing request received')
@@ -279,39 +281,39 @@ export async function videoRoutes(fastify: FastifyInstance) {
         })
       }
 
-      // Save uploaded file
-      const inputPath = await videoProcessor.saveUploadedFile(fileBuffer, videoFile.filename)
+      // Generate unique IDs
+      const uploadId = uuidv4()
+      const jobId = uuidv4()
 
-      // Process video with progress tracking
-      const result = await videoProcessor.processVideo(
-        inputPath,
-        watermarkSettings,
-        (progress) => {
-          // Here you could emit WebSocket events for real-time progress
-          console.log(`Processing progress: ${progress}%`)
-        }
-      )
-
-      // Cleanup input file
-      await videoProcessor.cleanup(inputPath)
-
-      if (result.success && result.outputPath) {
-        // Return success with download URL
-        return reply.send({
-          success: true,
-          data: {
-            processedUrl: videoProcessor.getOutputUrl(result.outputPath),
-            processingTime: result.processingTime,
-            filename: videoFile.filename,
-            watermark: watermarkSettings
-          }
-        })
-      } else {
-        return reply.code(500).send({
-          success: false,
-          error: { message: result.error || 'Video-Verarbeitung fehlgeschlagen' }
-        })
+      // Create job data for queue
+      const jobData: JobData = {
+        id: jobId,
+        file: {
+          filename: videoFile.filename,
+          originalName: videoFile.filename,
+          buffer: fileBuffer,
+          mimetype: videoFile.mimetype,
+          size: fileBuffer.length
+        },
+        watermark: watermarkSettings,
+        uploadId
       }
+
+      // Add job to queue instead of processing immediately
+      await fastify.queueManager.addJob('video', jobData)
+
+      // Return immediate response with upload ID for tracking
+      return reply.send({
+        success: true,
+        data: {
+          uploadId,
+          jobId,
+          filename: videoFile.filename,
+          watermark: watermarkSettings,
+          status: 'queued',
+          message: 'Video wurde zur Verarbeitung hinzugefügt'
+        }
+      })
 
     } catch (error) {
       console.error('Video processing error:', error)

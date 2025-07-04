@@ -7,10 +7,18 @@ import { formatFileSize, isImageFile, isVideoFile, isArchiveFile } from '@/utils
 import toast from 'react-hot-toast'
 
 interface DropZoneProps {
-  onUpload?: (files: File[]) => void
+  onUpload?: (files: File[]) => Promise<void>
   accept?: Record<string, string[]>
   maxSize?: number
   multiple?: boolean
+}
+
+interface UploadingFile {
+  file: File
+  id: string
+  status: 'uploading' | 'queued' | 'error'
+  uploadId?: string
+  jobId?: string
 }
 
 const DropZone: React.FC<DropZoneProps> = ({
@@ -25,33 +33,110 @@ const DropZone: React.FC<DropZoneProps> = ({
   maxSize = 500 * 1024 * 1024, // 500MB
   multiple = true,
 }) => {
-  const [uploadedFiles, setUploadedFiles] = useState<File[]>([])
+  const [uploadingFiles, setUploadingFiles] = useState<UploadingFile[]>([])
   const [isUploading, setIsUploading] = useState(false)
+
+  const uploadFile = async (file: File): Promise<any> => {
+    const formData = new FormData()
+    formData.append('file', file)
+    
+    // Default watermark settings - in a real app, this would come from user input
+    const watermarkSettings = {
+      text: '© 2024 WatermarkPro',
+      fontSize: 24,
+      color: '#ffffff',
+      position: 'bottom-right',
+      opacity: 0.8
+    }
+    formData.append('watermark', JSON.stringify(watermarkSettings))
+
+    // Determine endpoint based on file type
+    const endpoint = isVideoFile(file.type) ? '/api/process-video' : '/api/process-file'
+    
+    const response = await fetch(`http://localhost:8000${endpoint}`, {
+      method: 'POST',
+      body: formData,
+    })
+
+    if (!response.ok) {
+      const errorData = await response.json()
+      throw new Error(errorData.error?.message || 'Upload failed')
+    }
+
+    const result = await response.json()
+    return result.data
+  }
 
   const onDropAccepted = useCallback(
     async (acceptedFiles: File[]) => {
+      if (isUploading) return
+      
       setIsUploading(true)
-      setUploadedFiles(acceptedFiles)
+      
+      // Add files to uploading state immediately
+      const newUploadingFiles: UploadingFile[] = acceptedFiles.map(file => ({
+        file,
+        id: Math.random().toString(36).substr(2, 9),
+        status: 'uploading'
+      }))
+      
+      setUploadingFiles(newUploadingFiles)
       
       try {
-        // Simuliere Upload-Prozess
-        await new Promise(resolve => setTimeout(resolve, 1000))
+        // Upload files in parallel
+        const uploadPromises = acceptedFiles.map(async (file, index) => {
+          try {
+            const uploadResult = await uploadFile(file)
+            
+            // Update file status to queued
+            setUploadingFiles(prev => prev.map(uf => 
+              uf.file === file 
+                ? { ...uf, status: 'queued', uploadId: uploadResult.uploadId, jobId: uploadResult.jobId }
+                : uf
+            ))
+            
+            return { file, success: true, uploadResult }
+          } catch (error) {
+            console.error(`Upload failed for ${file.name}:`, error)
+            
+            // Update file status to error
+            setUploadingFiles(prev => prev.map(uf => 
+              uf.file === file 
+                ? { ...uf, status: 'error' }
+                : uf
+            ))
+            
+            toast.error(`Fehler beim Hochladen von ${file.name}`)
+            return { file, success: false, error }
+          }
+        })
         
-        onUpload?.(acceptedFiles)
-        toast.success(`${acceptedFiles.length} Datei(en) erfolgreich hochgeladen`)
+        const results = await Promise.all(uploadPromises)
+        const successCount = results.filter(r => r.success).length
         
-        // Reset nach 3 Sekunden
+        if (successCount > 0) {
+          toast.success(`${successCount} Datei(en) erfolgreich zur Verarbeitung hinzugefügt`)
+          
+          // Call onUpload if provided
+          if (onUpload) {
+            await onUpload(acceptedFiles)
+          }
+        }
+        
+        // Clear uploading files after 3 seconds
         setTimeout(() => {
-          setUploadedFiles([])
+          setUploadingFiles([])
         }, 3000)
+        
       } catch (error) {
+        console.error('Upload error:', error)
         toast.error('Fehler beim Hochladen der Dateien')
-        setUploadedFiles([])
+        setUploadingFiles([])
       } finally {
         setIsUploading(false)
       }
     },
-    [onUpload]
+    [onUpload, isUploading]
   )
 
   const onDropRejected = useCallback((rejectedFiles: any[]) => {
@@ -75,7 +160,7 @@ const DropZone: React.FC<DropZoneProps> = ({
     accept,
     maxSize,
     multiple,
-    disabled: isUploading,
+    disabled: false, // Allow multiple uploads
   })
 
   const getFileIcon = (file: File) => {
@@ -92,6 +177,28 @@ const DropZone: React.FC<DropZoneProps> = ({
     return 'Datei'
   }
 
+  const getStatusIcon = (status: UploadingFile['status']) => {
+    switch (status) {
+      case 'uploading':
+        return <div className="w-5 h-5 border-2 border-blue-200 border-t-blue-600 rounded-full animate-spin" />
+      case 'queued':
+        return <CheckCircleIcon className="w-5 h-5 text-green-500" />
+      case 'error':
+        return <div className="w-5 h-5 text-red-500">❌</div>
+      default:
+        return null
+    }
+  }
+
+  const getStatusText = (status: UploadingFile['status']) => {
+    switch (status) {
+      case 'uploading': return 'Wird hochgeladen...'
+      case 'queued': return 'Zur Verarbeitung hinzugefügt'
+      case 'error': return 'Fehler beim Upload'
+      default: return ''
+    }
+  }
+
   return (
     <div className="w-full">
       <motion.div
@@ -103,108 +210,94 @@ const DropZone: React.FC<DropZoneProps> = ({
             'border-primary-500 bg-primary-50 scale-105': isDragActive && !isDragReject,
             'border-red-500 bg-red-50': isDragReject,
             'border-gray-300 bg-white': !isDragActive,
-            'cursor-not-allowed opacity-60': isUploading,
           }
         )}
-        whileHover={!isUploading ? { scale: 1.02 } : undefined}
-        whileTap={!isUploading ? { scale: 0.98 } : undefined}
+        whileHover={{ scale: 1.02 }}
+        whileTap={{ scale: 0.98 }}
       >
         <input {...getInputProps()} />
         
         <AnimatePresence mode="wait">
-          {isUploading ? (
-            <motion.div
-              key="uploading"
-              initial={{ opacity: 0, scale: 0.8 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.8 }}
-              className="flex flex-col items-center"
-            >
-              <div className="w-12 h-12 border-4 border-primary-200 border-t-primary-600 rounded-full animate-spin mb-4" />
-              <p className="text-lg font-medium text-primary-700">Dateien werden hochgeladen...</p>
-              <p className="text-sm text-primary-600 mt-1">Bitte warten Sie einen Moment</p>
-            </motion.div>
-          ) : uploadedFiles.length > 0 ? (
-            <motion.div
-              key="success"
-              initial={{ opacity: 0, scale: 0.8 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.8 }}
-              className="flex flex-col items-center"
-            >
-              <CheckCircleIcon className="w-12 h-12 text-green-500 mb-4" />
-              <p className="text-lg font-medium text-green-700">Upload erfolgreich!</p>
-              <p className="text-sm text-green-600 mt-1">
-                {uploadedFiles.length} Datei(en) verarbeitung wird gestartet
+          <motion.div
+            key="default"
+            initial={{ opacity: 0, scale: 0.8 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.8 }}
+          >
+            <CloudArrowUpIcon className="mx-auto h-16 w-16 text-gray-400 mb-4" />
+            <h3 className="text-xl font-semibold text-gray-700 mb-2">
+              {isDragActive
+                ? isDragReject
+                  ? 'Ungültige Dateien'
+                  : 'Dateien hier ablegen'
+                : 'Dateien hochladen'}
+            </h3>
+            <p className="text-gray-500 mb-4">
+              {isDragActive
+                ? isDragReject
+                  ? 'Diese Dateien werden nicht unterstützt'
+                  : 'Lassen Sie die Dateien los, um sie hochzuladen'
+                : 'Ziehen Sie Dateien hierher oder klicken Sie zum Auswählen'}
+            </p>
+            <div className="flex flex-wrap justify-center gap-2 text-xs text-gray-400">
+              <span className="bg-gray-100 px-2 py-1 rounded">Bilder (JPG, PNG, WebP)</span>
+              <span className="bg-gray-100 px-2 py-1 rounded">Videos (MP4, AVI, MOV)</span>
+              <span className="bg-gray-100 px-2 py-1 rounded">Archive (ZIP, RAR, 7Z)</span>
+            </div>
+            <p className="text-xs text-gray-400 mt-3">
+              Maximale Dateigröße: {formatFileSize(maxSize)}
+            </p>
+            {uploadingFiles.length > 0 && (
+              <p className="text-xs text-blue-600 mt-2 font-medium">
+                ✨ Weitere Dateien können jederzeit hinzugefügt werden
               </p>
-            </motion.div>
-          ) : (
-            <motion.div
-              key="default"
-              initial={{ opacity: 0, scale: 0.8 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.8 }}
-            >
-              <CloudArrowUpIcon className="mx-auto h-16 w-16 text-gray-400 mb-4" />
-              <h3 className="text-xl font-semibold text-gray-700 mb-2">
-                {isDragActive
-                  ? isDragReject
-                    ? 'Ungültige Dateien'
-                    : 'Dateien hier ablegen'
-                  : 'Dateien hochladen'}
-              </h3>
-              <p className="text-gray-500 mb-4">
-                {isDragActive
-                  ? isDragReject
-                    ? 'Diese Dateien werden nicht unterstützt'
-                    : 'Lassen Sie die Dateien los, um sie hochzuladen'
-                  : 'Ziehen Sie Dateien hierher oder klicken Sie zum Auswählen'}
-              </p>
-              <div className="flex flex-wrap justify-center gap-2 text-xs text-gray-400">
-                <span className="bg-gray-100 px-2 py-1 rounded">Bilder (JPG, PNG, WebP)</span>
-                <span className="bg-gray-100 px-2 py-1 rounded">Videos (MP4, AVI, MOV)</span>
-                <span className="bg-gray-100 px-2 py-1 rounded">Archive (ZIP, RAR, 7Z)</span>
-              </div>
-              <p className="text-xs text-gray-400 mt-3">
-                Maximale Dateigröße: {formatFileSize(maxSize)}
-              </p>
-            </motion.div>
-          )}
+            )}
+          </motion.div>
         </AnimatePresence>
       </motion.div>
 
-      {/* File Preview */}
+      {/* Upload Progress */}
       <AnimatePresence>
-        {uploadedFiles.length > 0 && !isUploading && (
+        {uploadingFiles.length > 0 && (
           <motion.div
             initial={{ opacity: 0, height: 0 }}
             animate={{ opacity: 1, height: 'auto' }}
             exit={{ opacity: 0, height: 0 }}
             className="mt-4 p-4 bg-white rounded-lg border border-gray-200 shadow-sm"
           >
-            <h4 className="text-sm font-medium text-gray-700 mb-3">Hochgeladene Dateien:</h4>
+            <h4 className="text-sm font-medium text-gray-700 mb-3">Upload-Status:</h4>
             <div className="space-y-2">
-              {uploadedFiles.map((file, index) => (
+              {uploadingFiles.map((uploadingFile, index) => (
                 <motion.div
-                  key={index}
+                  key={uploadingFile.id}
                   initial={{ opacity: 0, x: -20 }}
                   animate={{ opacity: 1, x: 0 }}
                   transition={{ delay: index * 0.1 }}
-                  className="flex items-center justify-between p-2 bg-gray-50 rounded-md"
+                  className="flex items-center justify-between p-3 bg-gray-50 rounded-md"
                 >
                   <div className="flex items-center space-x-3">
-                    <span className="text-lg">{getFileIcon(file)}</span>
+                    <span className="text-lg">{getFileIcon(uploadingFile.file)}</span>
                     <div>
-                      <p className="text-sm font-medium text-gray-700">{file.name}</p>
+                      <p className="text-sm font-medium text-gray-700">{uploadingFile.file.name}</p>
                       <p className="text-xs text-gray-500">
-                        {getFileTypeLabel(file)} • {formatFileSize(file.size)}
+                        {getFileTypeLabel(uploadingFile.file)} • {formatFileSize(uploadingFile.file.size)}
                       </p>
                     </div>
                   </div>
-                  <CheckCircleIcon className="w-5 h-5 text-green-500" />
+                  <div className="flex items-center space-x-2">
+                    {getStatusIcon(uploadingFile.status)}
+                    <span className="text-xs text-gray-600">{getStatusText(uploadingFile.status)}</span>
+                  </div>
                 </motion.div>
               ))}
             </div>
+            {uploadingFiles.some(f => f.status === 'queued') && (
+              <div className="mt-3 p-2 bg-blue-50 rounded-md border border-blue-200">
+                <p className="text-xs text-blue-700">
+                  📊 Dateien werden im Hintergrund verarbeitet. Sie können weitere Dateien hochladen!
+                </p>
+              </div>
+            )}
           </motion.div>
         )}
       </AnimatePresence>

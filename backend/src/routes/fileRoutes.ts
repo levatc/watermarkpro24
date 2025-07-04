@@ -1,7 +1,9 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
 import { fileProcessor } from '../services/fileProcessor'
+import { QueueManager, JobData } from '../services/queue/QueueManager'
 import path from 'path'
 import fs from 'fs'
+import { v4 as uuidv4 } from 'uuid'
 
 interface WatermarkSettings {
   text: string
@@ -95,7 +97,7 @@ export async function fileRoutes(fastify: FastifyInstance) {
     }
   })
 
-  // Process images and PDFs with watermark
+  // Process images and PDFs with watermark - NEW QUEUE-BASED APPROACH
   fastify.post('/api/process-file', async (request: ProcessFileRequest, reply: FastifyReply) => {
     try {
       console.log('File processing request received')
@@ -234,40 +236,40 @@ export async function fileRoutes(fastify: FastifyInstance) {
         })
       }
 
-      // Save uploaded file
-      const inputPath = await fileProcessor.saveUploadedFile(fileBuffer, uploadedFile.filename)
+      // Generate unique IDs
+      const uploadId = uuidv4()
+      const jobId = uuidv4()
 
-      // Process file with progress tracking
-      const result = await fileProcessor.processFile(
-        inputPath,
-        fileType,
-        watermarkSettings,
-        (progress) => {
-          console.log(`Processing progress: ${progress}%`)
-        }
-      )
-
-      // Cleanup input file
-      await fileProcessor.cleanup(inputPath)
-
-      if (result.success && result.outputPath) {
-        // Return success with download URL
-        return reply.send({
-          success: true,
-          data: {
-            processedUrl: fileProcessor.getOutputUrl(result.outputPath),
-            processingTime: result.processingTime,
-            filename: uploadedFile.filename,
-            fileType: fileType,
-            watermark: watermarkSettings
-          }
-        })
-      } else {
-        return reply.code(500).send({
-          success: false,
-          error: { message: result.error || 'Datei-Verarbeitung fehlgeschlagen' }
-        })
+      // Create job data for queue
+      const jobData: JobData = {
+        id: jobId,
+        file: {
+          filename: uploadedFile.filename,
+          originalName: uploadedFile.filename,
+          buffer: fileBuffer,
+          mimetype: uploadedFile.mimetype,
+          size: fileBuffer.length
+        },
+        watermark: watermarkSettings,
+        uploadId
       }
+
+      // Add job to queue instead of processing immediately
+      await fastify.queueManager.addJob('image', jobData)
+
+      // Return immediate response with upload ID for tracking
+      return reply.send({
+        success: true,
+        data: {
+          uploadId,
+          jobId,
+          filename: uploadedFile.filename,
+          fileType: fileType,
+          watermark: watermarkSettings,
+          status: 'queued',
+          message: 'Datei wurde zur Verarbeitung hinzugefügt'
+        }
+      })
 
     } catch (error) {
       console.error('File processing error:', error)
